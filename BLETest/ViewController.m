@@ -17,13 +17,20 @@
 @property (weak, nonatomic) IBOutlet UITextField *packageNumTF;
 @property (weak, nonatomic) IBOutlet UITextField *packageIntervalTF;
 @property (weak, nonatomic) IBOutlet UITextView *logTextView;
+@property (weak, nonatomic) IBOutlet UISwitch *sendButton;
 
 @property (nonatomic, strong) CBCentralManager* centralManager;
 @property (nonatomic, strong) NSMutableArray* missedPackageArray;
+@property (nonatomic, strong) CBPeripheral* discoveredDevice;
 @property (nonatomic, strong) CBPeripheral* connectedDevice;
 @property (nonatomic, assign) NSInteger packageNumToSend;
 @property (nonatomic, assign) NSInteger packageSendInterval;
+@property (nonatomic, strong) CBCharacteristic* sendCharacteristic;
 
+@property (nonatomic, strong) NSTimer* sendTimer;
+
+@property (nonatomic, assign) NSInteger packageLength;
+@property (nonatomic, assign) NSInteger packageIndex;
 @end
 
 @implementation ViewController
@@ -48,16 +55,53 @@
     _packageIntervalTF.text = [NSString stringWithFormat:@"%ld",(long)_packageSendInterval];
     _packageIntervalTF.delegate = self;
     _packageIntervalTF.tag = 1001;
+    _sendButton.enabled = NO;
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event{
     [self.view endEditing:YES];
 }
 
-- (IBAction)beginConnect:(id)sender {
+- (IBAction)sendSwitch:(UISwitch *)sender {
+    if (sender.isOn) {
+        _packageIndex = 0;
+        _sendTimer = [NSTimer scheduledTimerWithTimeInterval:_packageSendInterval/1000.0 target:self selector:@selector(sendMessage) userInfo:nil repeats:YES];
+    }else{
+        NSLog(@"stop send");
+        [_sendTimer invalidate];
+        _sendTimer = nil;
+    }
 }
 
-- (IBAction)sendSwitch:(UISwitch *)sender {
+- (void)sendMessage{
+    
+    if (_connectedDevice && _sendCharacteristic) {
+        NSLog(@"Send Message");
+        uint8_t* data = malloc(sizeof(uint8_t)*_packageLength);
+        memset(data, 0xFF, _packageLength);
+        data[0] = (_packageIndex & 0xFF000000) >> 8*3;
+        data[1] = (_packageIndex & 0x00FF0000) >> 8*2;
+        data[2] = (_packageIndex & 0x0000FF00) >> 8;
+        data[3] = (_packageIndex & 0x000000FF);
+        
+        
+        NSData* dataOO = [[NSData alloc] initWithBytes:data length:_packageLength];
+        
+        NSString* msg = [NSString stringWithFormat:@"[%d]Send Message:%@",_packageIndex,dataOO];
+        _sendStatusLabel.text = msg;
+        NSLog(@"%@",msg);
+        _packageIndex++;
+        
+        if (_packageIndex < _packageNumToSend) {
+            [_connectedDevice writeValue:dataOO forCharacteristic:_sendCharacteristic type:CBCharacteristicWriteWithResponse];
+        }else{
+            NSLog(@"stop send");
+            [_sendTimer invalidate];
+            _sendTimer = nil;
+            _sendButton.on = NO;
+        }
+        
+    }
 }
 
 
@@ -97,16 +141,18 @@
     }
 }
 
-#pragma mark - CBCentralManagerDelegate
+
 
 - (void)scanBTDevice{
     /*第一个参数nil就是扫描周围所有的外设，扫描到外设后会进入
              - (void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral advertisementData:(NSDictionary *)advertisementData RSSI:(NSNumber *)RSSI;
      */
-    NSDictionary * dic = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithBool:false],CBCentralManagerScanOptionAllowDuplicatesKey, nil];
-    [_centralManager scanForPeripheralsWithServices:nil options:dic];
+//    NSDictionary * dic = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithBool:NO],CBCentralManagerScanOptionAllowDuplicatesKey, nil];
+    [_centralManager scanForPeripheralsWithServices:@[[CBUUID UUIDWithString:@"636F6D2E-6A69-7561-6E2E-424C45303400"]] options:nil];
     _connectStatusLabel.text = @"Searching";
 }
+
+#pragma mark - CBCentralManagerDelegate
 
 -(void)centralManagerDidUpdateState:(CBCentralManager *)central{
     switch (central.state){
@@ -130,7 +176,6 @@
             NSLog(@">>>CBCentralManagerStatePoweredOn");
             //开始扫描周围的外设
             [self scanBTDevice];
-            
         }
             break;
         default:
@@ -139,11 +184,162 @@
     
 }
 
+
+
 //扫描到设备会进入方法
 -(void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral advertisementData:(NSDictionary *)advertisementData RSSI:(NSNumber *)RSSI{
+    NSArray* services = advertisementData[CBAdvertisementDataServiceUUIDsKey];
+    if ([services isKindOfClass:[NSArray class]]) {
+        for (CBUUID* service in services) {
+            if ([service.UUIDString isEqualToString:@"636F6D2E-6A69-7561-6E2E-424C45303400"]) {
+                //connect
+                NSLog(@"didDiscoverPeripheral %@",peripheral);
+                _connectStatusLabel.text = @"Discovered";
+                _discoveredDevice = peripheral;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                     [_centralManager connectPeripheral:peripheral options:nil];
+                });
+               
+                return;
+            }
+        }
+    }
     
-    NSLog(@"扫描到设备:%@",peripheral);
     
 }
 
+
+- (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral{
+
+    NSLog(@"didConnectPeripheral %@",peripheral);
+    _connectStatusLabel.text = @"Connected";
+    _connectedDevice = peripheral;
+    peripheral.delegate = self;
+//    [peripheral discoverServices:nil];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (_connectedDevice) {
+            [_connectedDevice discoverServices:nil];
+            
+        }
+    });
+    [central stopScan];
+}
+
+- (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error{
+    
+    if ((_connectedDevice && [_connectedDevice.identifier.UUIDString isEqualToString:peripheral.identifier.UUIDString]) || !_connectedDevice) {
+        NSLog(@"connect failed");
+        _connectStatusLabel.text = @"Connect Failed";
+        _connectedDevice = nil;
+        [self scanBTDevice];
+        _sendButton.enabled = NO;
+        _sendButton.on = NO;
+    }
+    
+}
+
+- (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error{
+    if ((_connectedDevice && [_connectedDevice.identifier.UUIDString isEqualToString:peripheral.identifier.UUIDString]) || !_connectedDevice) {
+        NSLog(@"dis connect");
+        _connectStatusLabel.text = @"Disconnected";
+        _connectedDevice = nil;
+        [self scanBTDevice];
+        _sendButton.enabled = NO;
+        _sendButton.on = NO;
+    }
+}
+
+
+#pragma mark - CBPeripheralDelegate
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error{
+    if(error == nil){
+        for (CBService *service in peripheral.services)
+        {
+            NSLog(@"service:%@",service);
+            [peripheral discoverCharacteristics:nil forService:service];
+        }
+    }
+    else{
+        NSLog(@"didDiscoverServices error:%@",error);
+        [_centralManager cancelPeripheralConnection:peripheral];
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error{
+    if(error == nil){
+        for (CBCharacteristic *aChar in service.characteristics)
+        {
+            NSLog(@"didDiscoverCharacteristicsForService:%@",aChar);
+//            [peripheral readValueForCharacteristic:aChar];
+            if ([aChar.UUID.UUIDString isEqualToString:@"7365642E-6A69-7561-6E2E-424C45303400"]){
+                [peripheral setNotifyValue:YES forCharacteristic:aChar];
+            }else if ([aChar.UUID.UUIDString isEqualToString:@"7265632E-6A69-7561-6E2E-424C45303400"]) {
+                _sendCharacteristic = aChar;
+                NSLog(@"can send max: %ld WithResponse",[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithResponse]);
+                NSLog(@"can send max: %ld WithoutResponse",[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse]);
+                _packageLength = [peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse];
+                _sendButton.enabled = YES;
+            }
+        }
+    }
+    else{
+        NSLog(@"didDiscoverCharacteristicsForService error:%@",error);
+        [_centralManager cancelPeripheralConnection:peripheral];
+    }
+    
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error{
+
+    if(error == nil){
+        NSLog(@"didUpdateValueForCharacteristic,%@:%@",characteristic.UUID,characteristic.value);
+    }
+    else{
+        NSLog(@"didUpdateValueForCharacteristic error:%@",error);
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error{
+    if(error==nil){
+        NSLog(@"didWriteValueForCharacteristic,%@",characteristic.UUID);
+    }
+    else{
+        NSLog(@"didWriteValueForCharacteristic error:%@",error);
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error{
+    if(error == nil){
+        
+        NSLog(@"didUpdateNotificationStateForCharacteristic,%@",characteristic.UUID);
+    }
+    else{
+        NSLog(@"didUpdateNotificationStateForCharacteristic error:%@",error);
+        [_centralManager cancelPeripheralConnection:peripheral];
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error{
+    NSLog(@"didDiscoverDescriptorsForCharacteristic,%@",characteristic.UUID);
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForDescriptor:(CBDescriptor *)descriptor error:(NSError *)error{
+    NSLog(@"didUpdateValueForDescriptor,%@",descriptor);
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didWriteValueForDescriptor:(CBDescriptor *)descriptor error:(NSError *)error{
+    NSLog(@"didWriteValueForDescriptor,%@",descriptor);
+}
+
+
+
+
 @end
+
+
+
+
+
+
+
