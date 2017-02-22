@@ -119,7 +119,7 @@
     if (_connectedDevice && _sendCharacteristic) {
         NSLog(@"Send Message");
         uint8_t* data = malloc(sizeof(uint8_t)*_packageLength);
-        memset(data, 0xFF, _packageLength);
+        memset(data, 0xaa, _packageLength);
         data[0] = (_packageIndex & 0xFF000000) >> 8*3;
         data[1] = (_packageIndex & 0x00FF0000) >> 8*2;
         data[2] = (_packageIndex & 0x0000FF00) >> 8;
@@ -128,10 +128,10 @@
         
         NSData* dataOO = [[NSData alloc] initWithBytes:data length:_packageLength];
         
-        NSString* msg = [NSString stringWithFormat:@"[%d]Send Message:%@",_packageIndex,dataOO];
+        NSString* msg = [NSString stringWithFormat:@"[%d]Send:%@",_packageIndex,dataOO];
         _sendStatusLabel.text = msg;
         NSLog(@"%@",msg);
-        _packageIndex++;
+        
         
         if (_packageIndex < _packageNumToSend) {
             [_connectedDevice writeValue:dataOO forCharacteristic:_sendCharacteristic type:CBCharacteristicWriteWithResponse];
@@ -141,6 +141,8 @@
             _sendTimer = nil;
             _sendButton.on = NO;
         }
+        
+        _packageIndex++;
         
     }
 }
