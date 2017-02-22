@@ -9,6 +9,24 @@
 #import "ViewController.h"
 #import <CoreBluetooth/CoreBluetooth.h>
 
+@interface NSMutableArray (PrintArray)
+
+- (NSString *)description;
+@end
+
+@implementation NSMutableArray (PrintArray)
+
+- (NSString *)description{
+    NSString* content = @"";
+    NSArray* copyOne = [self copy];
+    for (id item in copyOne) {
+        content = [content stringByAppendingString:[NSString stringWithFormat:@"[%@]",[item description]]];
+    }
+    return content;
+}
+
+@end
+
 @interface ViewController ()<CBCentralManagerDelegate,CBPeripheralDelegate, UITextFieldDelegate>
 @property (weak, nonatomic) IBOutlet UILabel *connectStatusLabel;
 @property (weak, nonatomic) IBOutlet UILabel *sendStatusLabel;
@@ -31,6 +49,13 @@
 
 @property (nonatomic, assign) NSInteger packageLength;
 @property (nonatomic, assign) NSInteger packageIndex;
+
+//rcv
+@property (nonatomic, assign) NSInteger rcvCount;
+@property (nonatomic, strong) NSMutableArray* rcvArr;
+@property (nonatomic, strong) NSMutableArray* missArr;
+
+@property (nonatomic, strong) CADisplayLink* displayLink;
 @end
 
 @implementation ViewController
@@ -42,10 +67,24 @@
     _packageSendInterval = 1000;//ms
     [self initUI];
     [self initBTManager];
+    _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateUI)];
+    [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+}
+
+- (void)updateUI{
+    _receiveStatusLabel.text = [NSString stringWithFormat:@"Rcv count:%ld",(long)_rcvCount];
+    if (_rcvCount == 0) {
+        _logTextView.text = @"";
+    }
+    self.logTextView.text = [NSString stringWithFormat:@"Rcv:%@",[self.rcvArr description]];
+    self.missStatusLabel.text = [NSString stringWithFormat:@"Miss:%@",[self.missArr description]];
 }
 
 - (void)initBTManager{
-    _centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:nil];
+    
+    dispatch_queue_t queue = dispatch_queue_create("oaoaoaoa", DISPATCH_QUEUE_SERIAL);
+    
+    _centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:queue];
 }
 
 - (void)initUI{
@@ -66,12 +105,14 @@
     if (sender.isOn) {
         _packageIndex = 0;
         _sendTimer = [NSTimer scheduledTimerWithTimeInterval:_packageSendInterval/1000.0 target:self selector:@selector(sendMessage) userInfo:nil repeats:YES];
+        
     }else{
         NSLog(@"stop send");
         [_sendTimer invalidate];
         _sendTimer = nil;
     }
 }
+
 
 - (void)sendMessage{
     
@@ -193,12 +234,16 @@
         for (CBUUID* service in services) {
             if ([service.UUIDString isEqualToString:@"636F6D2E-6A69-7561-6E2E-424C45303400"]) {
                 //connect
-                NSLog(@"didDiscoverPeripheral %@",peripheral);
-                _connectStatusLabel.text = @"Discovered";
-                _discoveredDevice = peripheral;
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                     [_centralManager connectPeripheral:peripheral options:nil];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSLog(@"didDiscoverPeripheral %@",peripheral);
+                    _connectStatusLabel.text = @"Discovered";
+                    _discoveredDevice = peripheral;
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [_centralManager connectPeripheral:peripheral options:nil];
+                    });
                 });
+                
+                
                
                 return;
             }
@@ -208,12 +253,14 @@
     
 }
 
-
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral{
 
     NSLog(@"didConnectPeripheral %@",peripheral);
-    _connectStatusLabel.text = @"Connected";
-    _connectedDevice = peripheral;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        _connectStatusLabel.text = @"Connected";
+        _connectedDevice = peripheral;
+    });
+    
     peripheral.delegate = self;
 //    [peripheral discoverServices:nil];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -228,12 +275,16 @@
 - (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error{
     
     if ((_connectedDevice && [_connectedDevice.identifier.UUIDString isEqualToString:peripheral.identifier.UUIDString]) || !_connectedDevice) {
-        NSLog(@"connect failed");
-        _connectStatusLabel.text = @"Connect Failed";
-        _connectedDevice = nil;
-        [self scanBTDevice];
-        _sendButton.enabled = NO;
-        _sendButton.on = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSLog(@"connect failed");
+            _connectStatusLabel.text = @"Connect Failed";
+            _connectedDevice = nil;
+            [self scanBTDevice];
+            _sendButton.enabled = NO;
+            _sendButton.on = NO;
+        });
+
+        
     }
     
 }
@@ -274,12 +325,21 @@
 //            [peripheral readValueForCharacteristic:aChar];
             if ([aChar.UUID.UUIDString isEqualToString:@"7365642E-6A69-7561-6E2E-424C45303400"]){
                 [peripheral setNotifyValue:YES forCharacteristic:aChar];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.rcvCount = 0;
+                    self.rcvArr = [NSMutableArray array];
+                    self.missArr = [NSMutableArray array];
+                });
+                
             }else if ([aChar.UUID.UUIDString isEqualToString:@"7265632E-6A69-7561-6E2E-424C45303400"]) {
                 _sendCharacteristic = aChar;
                 NSLog(@"can send max: %ld WithResponse",[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithResponse]);
                 NSLog(@"can send max: %ld WithoutResponse",[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse]);
                 _packageLength = [peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse];
-                _sendButton.enabled = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    _sendButton.enabled = YES;
+                });
+                
             }
         }
     }
@@ -293,7 +353,26 @@
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error{
 
     if(error == nil){
+        
+
         NSLog(@"didUpdateValueForCharacteristic,%@:%@",characteristic.UUID,characteristic.value);
+        NSData* dataRcv = characteristic.value;
+        uint8_t* data = malloc(sizeof(uint8_t) * dataRcv.length);
+        [dataRcv getBytes:data length:dataRcv.length];
+        NSInteger rcvIndex = data[0] * 0x1000000 + data[1] * 0x10000 + data[2] * 0x100 + data[3];
+        NSNumber* msg = @(rcvIndex);
+        static NSInteger previousIndex = 0;
+        previousIndex++;
+        if (rcvIndex == 0) {
+            self.missArr = [NSMutableArray array];
+            previousIndex = 0;
+        }
+        if (rcvIndex != previousIndex) {
+            [self.missArr addObject:@(rcvIndex)];
+        }
+        previousIndex = rcvIndex;
+        [self.rcvArr addObject:msg];
+        self.rcvCount++;
     }
     else{
         NSLog(@"didUpdateValueForCharacteristic error:%@",error);
