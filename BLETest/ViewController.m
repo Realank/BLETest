@@ -68,6 +68,7 @@
     [self initUI];
     [self initBTManager];
     _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateUI)];
+    _displayLink.frameInterval = 2;
     [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
 }
 
@@ -76,7 +77,7 @@
     if (_rcvCount == 0) {
         _logTextView.text = @"";
     }
-    self.logTextView.text = [NSString stringWithFormat:@"Rcv:%@",[self.rcvArr description]];
+//    self.logTextView.text = [NSString stringWithFormat:@"Rcv:%@",[self.rcvArr description]];
     self.missStatusLabel.text = [NSString stringWithFormat:@"Miss:%@",[self.missArr description]];
 }
 
@@ -104,8 +105,16 @@
 - (IBAction)sendSwitch:(UISwitch *)sender {
     if (sender.isOn) {
         _packageIndex = 0;
-        _sendTimer = [NSTimer scheduledTimerWithTimeInterval:_packageSendInterval/1000.0 target:self selector:@selector(sendMessage) userInfo:nil repeats:YES];
         
+        if (_packageSendInterval == 0) {
+            sender.enabled = NO;
+            for (int i = 0; i < _packageNumToSend; i++) {
+                [self sendMessage];
+            }
+            sender.enabled = YES;
+        }else{
+            _sendTimer = [NSTimer scheduledTimerWithTimeInterval:_packageSendInterval/1000.0 target:self selector:@selector(sendMessage) userInfo:nil repeats:YES];
+        }
     }else{
         NSLog(@"stop send");
         [_sendTimer invalidate];
@@ -134,7 +143,7 @@
         
         
         if (_packageIndex < _packageNumToSend) {
-            [_connectedDevice writeValue:dataOO forCharacteristic:_sendCharacteristic type:CBCharacteristicWriteWithResponse];
+            [_connectedDevice writeValue:dataOO forCharacteristic:_sendCharacteristic type:CBCharacteristicWriteWithoutResponse];
         }else{
             NSLog(@"stop send");
             [_sendTimer invalidate];
@@ -159,8 +168,8 @@
             if (textField.markedTextRange == nil) {
                 textField.text = [NSString stringWithFormat:@"%ld",(long)inputNumber];
             }
-        }else if (inputNumber > 10000){
-            inputNumber = 10000;
+        }else if (inputNumber > 10000000){
+            inputNumber = 10000000;
             if (textField.markedTextRange == nil) {
                 textField.text = [NSString stringWithFormat:@"%ld",(long)inputNumber];
             }
@@ -169,8 +178,8 @@
         
     }else if(textField.tag == 1001){
         //package interval
-        if (inputNumber < 1) {
-            inputNumber = 1;
+        if (inputNumber < 0) {
+            inputNumber = 0;
             if (textField.markedTextRange == nil) {
                 textField.text = [NSString stringWithFormat:@"%ld",(long)inputNumber];
             }
@@ -337,6 +346,7 @@
                 _sendCharacteristic = aChar;
                 NSLog(@"can send max: %ld WithResponse",[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithResponse]);
                 NSLog(@"can send max: %ld WithoutResponse",[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse]);
+                
                 _packageLength = [peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     _sendButton.enabled = YES;
